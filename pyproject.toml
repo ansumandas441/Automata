@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "automata"
+version = "0.1.0"
+description = "Orchestrator that auto-edits multi-source screencasts from speech and gaze"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# The core deliberately has zero runtime dependencies, so the director can be
+# tested without model weights, a GPU, or an API key.
+perception = [
+  "faster-whisper>=1.0",
+  # 1.0 dropped the legacy `mediapipe.solutions` API for Tasks; gaze.py targets
+  # Tasks, which also yields a real head-pose matrix and eye-look blendshapes.
+  "mediapipe>=1.0",
+  "av>=12.0",
+]
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+automata = "automata.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/automata"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# The escalation vocabulary reads as prose; quoted-and-comma'd it does not.
+"src/automata/perception/llm.py" = ["SIM905"]
