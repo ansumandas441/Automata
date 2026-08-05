@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inside Automata — how two recordings become one edited video</title>
+<meta name="description" content="A traced teardown of the Automata pipeline: screen.mp4 and camera.mp4 to one edited video, using real data from a nine-minute run.">
+<style>
+  /* baseline the artifact host normally supplies */
+  html { -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; }
+  img, svg { max-width: 100%; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --paper:      #eceff4;
+    --paper-2:    #e3e7ee;
+    --card:       #f6f8fb;
+    --ink:        #161b22;
+    --ink-2:      #3d4753;
+    --muted:      #5c6773;
+    --rule:       #ccd4e0;
+    --rule-soft:  #dde3ec;
+    --screen:     #0f7f81;
+    --screen-bg:  rgba(15,127,129,.10);
+    --camera:     #bd5f10;
+    --camera-bg:  rgba(189,95,16,.10);
+    --flag:       #8a1f3d;
+
+    --display: Futura, "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+    --body: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+    --measure: 66ch;
+    --shell: 1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:     #0f1319;
+      --paper-2:   #141a22;
+      --card:      #171e27;
+      --ink:       #dce3ed;
+      --ink-2:     #aab4c2;
+      --muted:     #7d8896;
+      --rule:      #2a333f;
+      --rule-soft: #212932;
+      --screen:    #3fc0c2;
+      --screen-bg: rgba(63,192,194,.13);
+      --camera:    #e8913c;
+      --camera-bg: rgba(232,145,60,.13);
+      --flag:      #e0708f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #0f1319;
+    --paper-2:   #141a22;
+    --card:      #171e27;
+    --ink:       #dce3ed;
+    --ink-2:     #aab4c2;
+    --muted:     #7d8896;
+    --rule:      #2a333f;
+    --rule-soft: #212932;
+    --screen:    #3fc0c2;
+    --screen-bg: rgba(63,192,194,.13);
+    --camera:    #e8913c;
+    --camera-bg: rgba(232,145,60,.13);
+    --flag:      #e0708f;
+  }
+  :root[data-theme="light"] {
+    --paper:     #eceff4;
+    --paper-2:   #e3e7ee;
+    --card:      #f6f8fb;
+    --ink:       #161b22;
+    --ink-2:     #3d4753;
+    --muted:     #5c6773;
+    --rule:      #ccd4e0;
+    --rule-soft: #dde3ec;
+    --screen:    #0f7f81;
+    --screen-bg: rgba(15,127,129,.10);
+    --camera:    #bd5f10;
+    --camera-bg: rgba(189,95,16,.10);
+    --flag:      #8a1f3d;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: var(--shell);
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  p { max-width: var(--measure); margin: 0; }
+  .stack { display: flex; flex-direction: column; gap: 1.05em; }
+
+  h1, h2, h3, .eyebrow, .stat-n, .chip, th {
+    font-family: var(--display);
+  }
+  h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 500; }
+
+  .eyebrow {
+    font-size: 11.5px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  code, .mono, pre { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  code {
+    font-size: .855em;
+    background: var(--paper-2);
+    padding: .1em .38em;
+    border-radius: 3px;
+    border: 1px solid var(--rule-soft);
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+  pre {
+    margin: 0;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.72;
+    color: var(--ink-2);
+  }
+
+  .tok-s { color: var(--screen); }
+  .tok-c { color: var(--camera); }
+  .tok-m { color: var(--muted); }
+  .tok-f { color: var(--flag); }
+
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--camera); outline-offset: 3px; border-radius: 2px; }
+
+  /* ---------- masthead ---------- */
+
+  header.top {
+    border-bottom: 1px solid var(--rule);
+    padding: 68px 0 46px;
+  }
+  h1 {
+    font-size: clamp(34px, 5.4vw, 58px);
+    line-height: 1.04;
+    letter-spacing: -.018em;
+    margin: 18px 0 0;
+    max-width: 15ch;
+  }
+  .lede {
+    margin-top: 22px;
+    font-size: 19px;
+    color: var(--ink-2);
+    max-width: 60ch;
+  }
+
+  .sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 30px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 9px;
+    font-size: 12px;
+    letter-spacing: .04em;
+    padding: 7px 13px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+  }
+  .chip b { font-weight: 500; }
+  .chip .m { font-family: var(--mono); font-size: 11px; opacity: .78; letter-spacing: 0; }
+  .chip.s { color: var(--screen); background: var(--screen-bg); }
+  .chip.c { color: var(--camera); background: var(--camera-bg); }
+  .chip.o { color: var(--muted); background: var(--paper-2); }
+
+  /* ---------- stations ---------- */
+
+  section.stage {
+    border-bottom: 1px solid var(--rule-soft);
+    padding: 62px 0;
+  }
+  .stage-head {
+    display: grid;
+    grid-template-columns: 62px 1fr;
+    gap: 0 22px;
+    align-items: start;
+  }
+  .stage-n {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    padding-top: 8px;
+    letter-spacing: .06em;
+  }
+  h2 {
+    font-size: clamp(23px, 3vw, 31px);
+    letter-spacing: -.012em;
+    line-height: 1.16;
+  }
+  .stage-body {
+    grid-column: 2;
+    margin-top: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+  }
+  h3 {
+    font-size: 14px;
+    letter-spacing: .03em;
+    color: var(--ink);
+    margin-bottom: -12px;
+  }
+
+  @media (max-width: 680px) {
+    .stage-head { grid-template-columns: 1fr; gap: 6px; }
+    .stage-body { grid-column: 1; }
+    .stage-n { padding-top: 0; }
+  }
+
+  /* ---------- io strip ---------- */
+
+  .io {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    padding: 11px 14px;
+    background: var(--paper-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+  }
+  .io .arrow { opacity: .5; }
+  .io b { color: var(--ink-2); font-weight: 400; }
+
+  /* ---------- data table ---------- */
+
+  .tw { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 480px;
+    font-size: 13.5px;
+  }
+  th {
+    text-align: left;
+    font-size: 11px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    padding: 0 14px 9px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  td {
+    padding: 10px 14px 10px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+    color: var(--ink-2);
+  }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td:first-child { color: var(--ink); }
+  .flagged { color: var(--flag); }
+
+  /* ---------- edl ---------- */
+
+  .edl { display: flex; flex-direction: column; gap: 12px; }
+  .edl-bar {
+    display: flex;
+    width: 100%;
+    height: 60px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--card);
+  }
+  .shot {
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    border-right: 1px solid var(--paper);
+    transition: filter .12s ease;
+  }
+  .shot:last-child { border-right: none; }
+  .shot.s { background: var(--screen); }
+  .shot.c { background: var(--camera); }
+  .shot:hover, .shot.on { filter: brightness(1.22); }
+  .shot.on::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--ink);
+  }
+  .ruler {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+  .readout {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: 8px 18px;
+    align-items: baseline;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 13px 15px;
+    background: var(--paper-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    min-height: 44px;
+  }
+  .readout .lab { color: var(--muted); font-size: 11px; letter-spacing: .05em; }
+  .readout .v { color: var(--ink); }
+  .readout .why { color: var(--ink-2); font-family: var(--body); font-size: 14px; }
+
+  /* ---------- gaze trace ---------- */
+
+  .trace {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 20px 20px 14px;
+    overflow-x: auto;
+  }
+  .trace-grid {
+    display: grid;
+    grid-template-columns: repeat(14, 1fr);
+    gap: 3px;
+    min-width: 520px;
+  }
+  .g {
+    height: 42px;
+    border-radius: 2px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 4px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--paper);
+  }
+  .g.look { background: var(--camera); }
+  .g.away { background: var(--screen); opacity: .55; }
+  .trace-ax {
+    display: grid;
+    grid-template-columns: repeat(14, 1fr);
+    gap: 3px;
+    min-width: 520px;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .marks { position: relative; height: 30px; min-width: 520px; margin-top: 4px; }
+  .mark {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--flag);
+    white-space: nowrap;
+    text-align: center;
+    line-height: 1.35;
+  }
+  .mark::before {
+    content: "";
+    display: block;
+    width: 1px;
+    height: 9px;
+    background: var(--flag);
+    margin: -8px auto 3px;
+  }
+
+  /* ---------- ladder ---------- */
+
+  .ladder { display: flex; flex-direction: column; gap: 0; }
+  .rung {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 18px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  .rung:first-child { border-top: 1px solid var(--rule); }
+  .rung .p {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .rung .d { font-size: 15px; color: var(--ink-2); }
+  .rung .d b { color: var(--ink); font-weight: 400; font-family: var(--display); }
+  @media (max-width: 560px) {
+    .rung { grid-template-columns: 1fr; gap: 3px; }
+  }
+
+  /* ---------- notes ---------- */
+
+  .note {
+    border-left: 2px solid var(--camera);
+    padding: 3px 0 3px 18px;
+    color: var(--ink-2);
+    font-size: 15.5px;
+    max-width: var(--measure);
+  }
+  .note b { color: var(--ink); font-weight: 400; font-family: var(--display); font-size: 14.5px; }
+
+  /* ---------- stats ---------- */
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px;
+    background: var(--rule-soft);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .stat { background: var(--card); padding: 17px 16px; }
+  .stat-n {
+    font-size: 26px;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    line-height: 1;
+  }
+  .stat-l {
+    font-size: 11px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 8px;
+    font-family: var(--display);
+  }
+
+  /* ---------- file map ---------- */
+
+  .files { display: flex; flex-direction: column; gap: 1px; background: var(--rule-soft); border: 1px solid var(--rule-soft); border-radius: 4px; overflow: hidden; }
+  .file { background: var(--card); padding: 15px 17px; display: grid; grid-template-columns: 210px 1fr; gap: 18px; align-items: baseline; }
+  .file .n { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+  .file .d { font-size: 14.5px; color: var(--ink-2); }
+  .file .d em { font-style: normal; color: var(--muted); }
+  @media (max-width: 620px) { .file { grid-template-columns: 1fr; gap: 4px; } }
+
+  footer {
+    padding: 46px 0 70px;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+  footer p { max-width: var(--measure); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<header class="top">
+  <div class="shell">
+    <div class="eyebrow">Automata &middot; pipeline teardown</div>
+    <h1>Two recordings go in. One edited video comes out.</h1>
+    <p class="lede">
+      Nothing in the middle looks at pixels. The system listens to what you said,
+      watches where you looked, writes both down as timestamped facts, and then a
+      plain state machine decides the edit. Here is every step, traced against a
+      real 9-minute run.
+    </p>
+    <div class="sources">
+      <span class="chip s"><b>screen.mp4</b> <span class="m">558.04s &middot; 25 fps &middot; 1920&times;1080</span></span>
+      <span class="chip c"><b>camera.mp4</b> <span class="m">552.64s &middot; 23.976 fps &middot; 1920&times;1080</span></span>
+      <span class="chip o"><b>out.mp4</b> <span class="m">552.64s &middot; 25 fps &middot; 231 MB</span></span>
+    </div>
+  </div>
+</header>
+
+<main class="shell">
+
+  <!-- ============ 0 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">00</div>
+      <h2>What is actually on the two tapes</h2>
+      <div class="stage-body">
+        <p>
+          Everything downstream depends on measuring the inputs rather than assuming
+          them. Two properties of this pair mattered, and neither was visible without
+          checking.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>screen.mp4</th>
+                <th>camera.mp4</th>
+                <th>Consequence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Duration</td>
+                <td class="num">558.040 s</td>
+                <td class="num">552.635 s</td>
+                <td>Editable window is the <em>overlap</em>: 552.635 s. The screen's last 5.40 s is dropped.</td>
+              </tr>
+              <tr>
+                <td>Frame rate</td>
+                <td class="num">25.000</td>
+                <td class="num">23.976</td>
+                <td>Both normalised to 25 fps before compositing. Output matches the screen, whose text shows judder most.</td>
+              </tr>
+              <tr>
+                <td>Audio level</td>
+                <td class="num flagged">&minus;91 dB</td>
+                <td class="num">&minus;24.6 dB</td>
+                <td class="flagged">The screen track exists but is digital silence. Speech is on the camera, so that is the transcription source.</td>
+              </tr>
+              <tr>
+                <td>Start time</td>
+                <td class="num">0.000</td>
+                <td class="num">0.000</td>
+                <td>Both clips share t=0, so <code>offset_s</code> is 0.0 for each.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <b>The master clock.</b> Every timestamp in the system lives on one shared
+          timeline: <code>master = local + offset_s</code>. Wall-clock time is used
+          exactly once, to derive that offset. After that everything reads container
+          PTS, never frame counts &mdash; dropped frames would silently drift a
+          frame-counting clock apart over nine minutes.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 1 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">01</div>
+      <h2>Perception turns footage into facts</h2>
+      <div class="stage-body">
+        <div class="io">
+          <b>screen.mp4</b> <b>camera.mp4</b>
+          <span class="arrow">&rarr;</span>
+          <span>automata analyze</span>
+          <span class="arrow">&rarr;</span>
+          <b>project.events.json</b>
+          <span>556 KB</span>
+        </div>
+
+        <p>
+          Three producers run over the footage. None of them decides anything &mdash;
+          each one only reports what it observed, stamped with a master-clock time.
+          They ran concurrently on two threads and took about four minutes.
+        </p>
+
+        <div class="stats">
+          <div class="stat"><div class="stat-n">201</div><div class="stat-l">utterances</div></div>
+          <div class="stat"><div class="stat-n">4,417</div><div class="stat-l">gaze samples</div></div>
+          <div class="stat"><div class="stat-n">201</div><div class="stat-l">intent labels</div></div>
+          <div class="stat"><div class="stat-n">4,819</div><div class="stat-l">events total</div></div>
+        </div>
+
+        <h3>Speech &mdash; what was said, and exactly when</h3>
+        <p>
+          Whisper transcribes the camera's audio with word-level timings, gated on
+          voice activity. The gate is not an optimisation: over silence the model
+          confidently invents phrases like <em>&ldquo;Thanks for watching!&rdquo;</em>,
+          and a screencast is full of quiet typing stretches.
+        </p>
+        <pre><code>{ <span class="tok-s">"type"</span>: <span class="tok-c">"utterance"</span>, <span class="tok-s">"t"</span>: 0.14, <span class="tok-s">"end"</span>: 0.7, <span class="tok-s">"text"</span>: <span class="tok-c">"My friends,"</span>,
+  <span class="tok-s">"words"</span>: [ { <span class="tok-s">"text"</span>: <span class="tok-c">"My"</span>,       <span class="tok-s">"t"</span>: 0.14, <span class="tok-s">"end"</span>: 0.34 },
+             { <span class="tok-s">"text"</span>: <span class="tok-c">"friends,"</span>, <span class="tok-s">"t"</span>: 0.34, <span class="tok-s">"end"</span>: 0.70 } ] }</code></pre>
+        <p>
+          Raw Whisper segments are bounded by breath, not by sentences &mdash; one
+          will happily return <em>&ldquo;No wait, that is wrong. Cut that. Alright,
+          back to me.&rdquo;</em> as a single block. Those word timings are used to
+          re-split each segment at sentence boundaries, so a later &ldquo;cut
+          that&rdquo; removes one sentence rather than three.
+        </p>
+
+        <h3>Gaze &mdash; are you addressing the lens or the screen</h3>
+        <p>
+          A face landmarker samples the camera eight times a second, reading head
+          pose and eye direction. Frames are located by presentation timestamp, never
+          by index. Each sample is one of three states, and the third one carries the
+          most weight.
+        </p>
+        <pre><code>{ <span class="tok-s">"type"</span>: <span class="tok-c">"gaze"</span>, <span class="tok-s">"t"</span>: 0.0, <span class="tok-s">"state"</span>: <span class="tok-c">"away"</span>, <span class="tok-s">"confidence"</span>: 0.605 }
+
+<span class="tok-m">looking</span>   299   <span class="tok-m">eyes on the lens</span>
+<span class="tok-m">away</span>      602   <span class="tok-m">face visible, attention elsewhere</span>
+<span class="tok-m">unknown</span>  3516   <span class="tok-m">no face found at all</span></code></pre>
+        <div class="note">
+          <b>Unknown is not away.</b> A missing face means the person leaned out of
+          frame, the light dropped, or a hand crossed the lens. Reporting that as
+          &ldquo;looked away&rdquo; would swing the camera every time they reach for
+          coffee. Unknown holds the current shot instead &mdash; which is why 80%
+          unknown here produced a long steady shot rather than chaos.
+        </div>
+
+        <h3>Intent &mdash; did you instruct the editor</h3>
+        <p>
+          Each sentence is labelled with one of four values. A free local pattern
+          matcher tries first; only genuinely ambiguous lines are worth escalating to
+          a language model, and every verdict is cached to disk so a re-run produces
+          the identical edit.
+        </p>
+        <pre><code><span class="tok-c">focus_screen</span>   <span class="tok-m">"let me show you this function"</span>
+<span class="tok-c">focus_camera</span>   <span class="tok-m">"back to me for a second"</span>
+<span class="tok-c">cut_previous</span>   <span class="tok-m">"cut that"  &mdash; an instruction, not the verb</span>
+<span class="tok-c">neutral</span>        <span class="tok-m">ordinary narration &mdash; 201 of 201 on this run</span></code></pre>
+        <p>
+          The model never decides the edit. It labels one sentence and stops. That
+          keeps the result reproducible, roughly fifty times cheaper, and debuggable
+          &mdash; when a cut is wrong you can name the rule that made it.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">02</div>
+      <h2>The bus puts time back in order</h2>
+      <div class="stage-body">
+        <p>
+          The producers run at wildly different rates &mdash; gaze at 8 Hz, speech in
+          bursts, a language-model verdict arriving a second or more after the
+          sentence it describes. Events therefore <em>arrive</em> out of order.
+        </p>
+        <p>
+          Consuming them in arrival order is exactly how an auto-editor cuts the
+          wrong sentence. So each producer declares a watermark meaning &ldquo;I will
+          never emit anything earlier than this&rdquo;, and the bus releases events
+          only once every producer has passed that point. The director then receives
+          a strictly ordered stream, and asserts that ordering rather than trusting it.
+        </p>
+        <div class="io">
+          <span>4,819 events, mixed arrival</span>
+          <span class="arrow">&rarr;</span>
+          <b>watermarked queue</b>
+          <span class="arrow">&rarr;</span>
+          <span>4,819 events, strict time order</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">03</div>
+      <h2>The director decides, deterministically</h2>
+      <div class="stage-body">
+        <p>
+          This is the whole product. A fixed state machine consumes the ordered
+          events and holds one piece of state: which layout is live right now. Four
+          rules compete, highest priority first.
+        </p>
+
+        <div class="ladder">
+          <div class="rung">
+            <div class="p">Forced</div>
+            <div class="d"><b>A source went missing.</b> Nothing to composite against, so this bypasses every damper below.</div>
+          </div>
+          <div class="rung">
+            <div class="p">Explicit</div>
+            <div class="d"><b>You said so.</b> A spoken instruction pins the layout for six seconds.</div>
+          </div>
+          <div class="rung">
+            <div class="p">Gaze</div>
+            <div class="d"><b>Where you are looking</b>, once it has held steady for 0.8 s.</div>
+          </div>
+          <div class="rung">
+            <div class="p">Hold</div>
+            <div class="d"><b>Change nothing.</b> The default, and what <code>unknown</code> gaze resolves to.</div>
+          </div>
+        </div>
+
+        <p>
+          Two dampers sit on top, and they matter more than classifier accuracy ever
+          will: no shot may be shorter than <code>2.5&nbsp;s</code>, and gaze must
+          hold for <code>0.8&nbsp;s</code> before it may move the camera. Without
+          them, someone glancing between screen and lens produces a strobing,
+          unwatchable edit.
+        </p>
+
+        <h3>Both dampers, caught in the real data</h3>
+        <p>
+          Here are the actual gaze samples around the first switch of this recording.
+          The camera does not cut when the eyes arrive, and it does not cut back when
+          they leave.
+        </p>
+
+        <div class="trace">
+          <div class="trace-grid">
+            <div class="g away"></div><div class="g away"></div>
+            <div class="g look"></div><div class="g look"></div><div class="g look"></div>
+            <div class="g look"></div><div class="g look"></div><div class="g look"></div>
+            <div class="g look"></div><div class="g look"></div><div class="g look"></div>
+            <div class="g look"></div><div class="g look"></div><div class="g away"></div>
+          </div>
+          <div class="trace-ax">
+            <div>23.52</div><div>23.65</div><div>23.77</div><div>23.90</div>
+            <div>24.02</div><div>24.15</div><div>24.27</div><div>24.40</div>
+            <div>24.52</div><div>24.65</div><div>24.77</div><div>24.90</div>
+            <div>25.02</div><div>25.15</div>
+          </div>
+          <div class="marks">
+            <div class="mark" style="left:17.8%">eyes arrive<br>23.77</div>
+            <div class="mark" style="left:67.8%">cut to camera<br>24.65</div>
+            <div class="mark" style="left:96.4%">eyes leave<br>25.15</div>
+          </div>
+        </div>
+
+        <p>
+          The eyes arrive at <code>23.77</code>. The cut happens at
+          <code>24.65</code> &mdash; <b>0.88&nbsp;s later</b>, the debounce refusing
+          to act on what might have been a glance. Then the eyes leave again at
+          <code>25.15</code>, only half a second into the new shot. An undamped
+          director would cut straight back, producing a 0.5&nbsp;s flash. Instead the
+          minimum-shot rule holds the camera until <code>27.40</code>.
+        </p>
+        <div class="note">
+          <b>Every decision is labelled.</b> Each shot carries the rule that produced
+          it &mdash; <code>default</code>, <code>gaze on lens</code>,
+          <code>said: back to me</code>, <code>camera source lost</code>. When an
+          edit looks wrong, that field is usually the entire investigation.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">04</div>
+      <h2>The timeline is the actual product</h2>
+      <div class="stage-body">
+        <div class="io">
+          <b>project.events.json</b>
+          <span class="arrow">&rarr;</span>
+          <span>automata plan</span>
+          <span class="arrow">&rarr;</span>
+          <b>project.timeline.json</b>
+          <span>4 KB &middot; milliseconds</span>
+        </div>
+
+        <p>
+          The director emits an edit decision list &mdash; shots and cut spans, as
+          plain JSON. No pixels have been touched. This file is the thing worth
+          keeping: it is diffable, hand-editable, and can be re-rendered forever.
+        </p>
+
+        <h3>All eleven shots from this run</h3>
+        <p>Select any block to read its decision.</p>
+
+        <div class="edl">
+          <div class="edl-bar" id="bar" role="group" aria-label="Eleven shots across 552 seconds"></div>
+          <div class="ruler">
+            <span>0:00</span><span>2:18</span><span>4:36</span><span>6:54</span><span>9:12</span>
+          </div>
+          <div class="readout" id="readout">
+            <span class="lab">SHOT</span>
+            <span class="v" id="r-n">&mdash;</span>
+            <span></span>
+            <span class="lab">SPAN</span>
+            <span class="v" id="r-t">select a block</span>
+            <span class="why" id="r-w"></span>
+          </div>
+        </div>
+
+        <pre><code>{ <span class="tok-s">"start"</span>: 0.0,
+  <span class="tok-s">"duration"</span>: 552.635,
+  <span class="tok-s">"segments"</span>: [
+    { <span class="tok-s">"start"</span>: 0.0,    <span class="tok-s">"end"</span>: 24.65,  <span class="tok-s">"layout"</span>: <span class="tok-c">"screen_focus"</span>, <span class="tok-s">"reason"</span>: <span class="tok-c">"default"</span> },
+    { <span class="tok-s">"start"</span>: 24.65,  <span class="tok-s">"end"</span>: 27.402, <span class="tok-s">"layout"</span>: <span class="tok-c">"camera_focus"</span>, <span class="tok-s">"reason"</span>: <span class="tok-c">"gaze on lens"</span> },
+    <span class="tok-m">&hellip; nine more</span> ],
+  <span class="tok-s">"cuts"</span>: [],
+  <span class="tok-s">"kept_spans"</span>: [ [0.0, 552.635] ],
+  <span class="tok-s">"warnings"</span>: [] }</code></pre>
+
+        <div class="note">
+          <b>Two clocks live in this file.</b> <code>segments</code> are output time,
+          after cuts. <code>kept_spans</code> are master time &mdash; which stretches
+          of the original survive. With no cuts on this run the two coincide, but the
+          moment you say &ldquo;cut that&rdquo; they diverge, and confusing them is
+          the fastest way to hand-edit a timeline wrongly.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">05</div>
+      <h2>One ffmpeg command does all the pixels</h2>
+      <div class="stage-body">
+        <div class="io">
+          <b>project.timeline.json</b>
+          <span class="arrow">&rarr;</span>
+          <span>automata render</span>
+          <span class="arrow">&rarr;</span>
+          <b>out.mp4</b>
+          <span>231 MB &middot; 38 s</span>
+        </div>
+
+        <p>
+          The renderer is deliberately dumb. It normalises both inputs to the output
+          canvas and frame rate, trims them to the kept spans, then stacks three
+          overlays whose <em>timing</em> comes from <code>enable=</code> expressions.
+        </p>
+        <pre><code><span class="tok-m"># normalise, trim, concat &mdash; both sources</span>
+[0:v]fps=25,scale=1920:1080,pad=&hellip;,setsar=1[<span class="tok-s">screen_src</span>];
+[1:v]fps=25,scale=1920:1080,pad=&hellip;,setsar=1[<span class="tok-c">camera_src</span>];
+
+<span class="tok-m"># camera fills the frame during the five camera shots</span>
+[<span class="tok-s">screen_base</span>][<span class="tok-c">camera_base</span>]overlay=0:0:enable='<span class="tok-f">between(t,24.650,27.402)</span>
+  +between(t,35.661,43.794)+between(t,72.447,74.950)
+  +between(t,534.534,540.790)+between(t,543.543,546.045)'[comp1];
+
+<span class="tok-m"># the corner insets, each on the complementary spans</span>
+[comp1][<span class="tok-c">camera_pip</span>]overlay=W-w-36:36:enable='&hellip;'[comp2];
+[comp2][<span class="tok-s">screen_pip</span>]overlay=W-w-36:H-h-36:enable='&hellip;'[comp3];</code></pre>
+
+        <div class="note">
+          <b>The graph never grows.</b> Timing lives inside those expressions rather
+          than in one filter chain per shot, so a forty-minute video with three
+          hundred shot changes builds exactly the same graph as a forty-second one.
+          Only the expressions get longer.
+        </div>
+
+        <p>
+          The result was verified rather than assumed: the finished file was
+          transcribed again and its speech timings compared against the events file.
+          They agreed to within about 50&nbsp;ms, which confirms the frame-rate
+          conversion and the master-clock mapping both survived the render.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ files ============ -->
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-n">&mdash;</div>
+      <h2>What each file is for</h2>
+      <div class="stage-body">
+        <p>
+          The three commands are separate because their costs are wildly different.
+          Analysis is slow and non-deterministic; planning is instant and pure. That
+          split is what makes tuning practical.
+        </p>
+        <div class="files">
+          <div class="file">
+            <div class="n">project.json</div>
+            <div class="d">Your inputs and settings. <em>Edit the <code>director</code> block to change how often it switches; the <code>render</code> block for size and inset corners.</em></div>
+          </div>
+          <div class="file">
+            <div class="n">project.events.json</div>
+            <div class="d">What perception observed. <em>Hand-correct a mistranscribed line here rather than re-recording. Re-running analyze refuses to overwrite it without <code>--force</code>.</em></div>
+          </div>
+          <div class="file">
+            <div class="n">project.timeline.json</div>
+            <div class="d">The edit itself. <em>Change a <code>layout</code> to override one moment, then render with <code>-t</code>. Save under a new name &mdash; re-planning overwrites this.</em></div>
+          </div>
+          <div class="file">
+            <div class="n">out.mp4</div>
+            <div class="d">The finished video. <em>Fully reproducible from the other three at any time.</em></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="shell">
+  <p>
+    Every figure on this page comes from one real run: a 9&nbsp;minute 13&nbsp;second
+    recording, analysed in about four minutes, planned in milliseconds, rendered in
+    38&nbsp;seconds. Gaze thresholds remain uncalibrated against a real face &mdash;
+    the one part of the system still waiting on proper footage.
+  </p>
+</footer>
+
+<script>
+  var SHOTS = [
+    [0.0, 24.65, "screen", "default"],
+    [24.65, 27.402, "camera", "gaze on lens"],
+    [27.402, 35.661, "screen", "gaze off lens"],
+    [35.661, 43.794, "camera", "gaze on lens"],
+    [43.794, 72.447, "screen", "gaze off lens"],
+    [72.447, 74.95, "camera", "gaze on lens"],
+    [74.95, 534.534, "screen", "gaze off lens"],
+    [534.534, 540.79, "camera", "gaze on lens"],
+    [540.79, 543.543, "screen", "gaze off lens"],
+    [543.543, 546.045, "camera", "gaze on lens"],
+    [546.045, 552.635, "screen", "gaze off lens"]
+  ];
+  var TOTAL = 552.635;
+
+  function clock(s) {
+    var m = Math.floor(s / 60);
+    var r = (s - m * 60).toFixed(2);
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  var bar = document.getElementById("bar");
+  var rn = document.getElementById("r-n");
+  var rt = document.getElementById("r-t");
+  var rw = document.getElementById("r-w");
+
+  SHOTS.forEach(function (s, i) {
+    var b = document.createElement("button");
+    var dur = s[1] - s[0];
+    b.className = "shot " + (s[2] === "screen" ? "s" : "c");
+    b.style.flex = dur + " 0 0";
+    b.setAttribute("aria-label",
+      "Shot " + (i + 1) + ", " + s[2] + " focus, " + clock(s[0]) + " to " + clock(s[1]) + ", " + s[3]);
+    b.addEventListener("click", function () { pick(i, b); });
+    b.addEventListener("mouseenter", function () { show(i); });
+    b.addEventListener("focus", function () { pick(i, b); });
+    bar.appendChild(b);
+  });
+
+  function show(i) {
+    var s = SHOTS[i];
+    rn.textContent = (i + 1) + " / 11 · " + (s[2] === "screen" ? "screen full frame" : "camera full frame");
+    rt.textContent = clock(s[0]) + " → " + clock(s[1]) + "  (" + (s[1] - s[0]).toFixed(2) + "s)";
+    rw.textContent = "“" + s[3] + "”";
+  }
+
+  function pick(i, el) {
+    var on = bar.querySelectorAll(".shot.on");
+    for (var k = 0; k < on.length; k++) on[k].classList.remove("on");
+    el.classList.add("on");
+    show(i);
+  }
+
+  bar.addEventListener("mouseleave", function () {
+    var sel = bar.querySelector(".shot.on");
+    if (sel) show([].indexOf.call(bar.children, sel));
+  });
+
+  show(1);
+  bar.children[1].classList.add("on");
+</script>
+
+<button id="theme" type="button" aria-label="Switch colour theme">
+  <span aria-hidden="true">◐</span> theme
+</button>
+<style>
+  #theme {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    font-family: var(--display); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 7px 11px; cursor: pointer;
+  }
+  #theme:hover { color: var(--ink); border-color: var(--muted); }
+  @media print { #theme { display: none; } }
+</style>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var saved = null;
+    try { saved = localStorage.getItem("automata-theme"); } catch (e) {}
+    if (saved) root.setAttribute("data-theme", saved);
+    document.getElementById("theme").addEventListener("click", function () {
+      var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var cur = root.getAttribute("data-theme") || (dark ? "dark" : "light");
+      var next = cur === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("automata-theme", next); } catch (e) {}
+    });
+  })();
+</script>
+</body>
+</html>

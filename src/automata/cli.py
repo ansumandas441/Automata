@@ -19,10 +19,21 @@ from .timeline import Timeline
 
 
 def _analyze(args: argparse.Namespace) -> int:
-    from .analyze import analyze  # imported late: pulls in the heavy optional deps
-
     project = Project.load(args.project)
     output = Path(args.output) if args.output else _events_path(project, args.project)
+
+    # Checked before the expensive work, not after: transcription can run for
+    # minutes, and refusing to write at the end would waste all of it.
+    if output.exists() and not args.force:
+        print(
+            f"{output} already exists; pass --force to overwrite.\n"
+            "Events files are meant to be hand-edited -- a corrected transcript "
+            "or a written fixture lives here, and re-analysing would discard it.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from .analyze import analyze  # imported late: pulls in the optional deps
 
     events, report = analyze(
         project,
@@ -35,6 +46,23 @@ def _analyze(args: argparse.Namespace) -> int:
     for line in report.lines():
         print(f"  {line}")
     return 0
+
+
+def _window_error(project: Project) -> str:
+    """Say which of the two causes it actually is.
+
+    An empty editable window means either the clips genuinely don't overlap, or
+    -- far more often on a hand-written project -- nobody declared how long they
+    are. Blaming `offset_s` for the second sends people to the wrong field.
+    """
+    if all(s.duration_s is None for s in project.sources):
+        return (
+            "no source declares duration_s, so there is no editable window.\n"
+            "Add it to each source (seconds), e.g.:\n"
+            "  ffprobe -v error -show_entries format=duration "
+            "-of csv=p=0 screen.mp4"
+        )
+    return "sources do not overlap in time; check offset_s and duration_s"
 
 
 def _events_path(project: Project, project_arg: str) -> Path:
@@ -58,7 +86,7 @@ def _plan(args: argparse.Namespace) -> int:
 
     start_t, end_t = editable_window(project.sources)
     if end_t - start_t <= 0:
-        print("sources do not overlap in time; check offset_s", file=sys.stderr)
+        print(_window_error(project), file=sys.stderr)
         return 2
 
     timeline = plan(
@@ -71,7 +99,29 @@ def _plan(args: argparse.Namespace) -> int:
     output = Path(args.output or Path(args.project).with_suffix(".timeline.json"))
     timeline.save(output)
     _summarise(timeline, output)
+    for note in _excluded_footage(project, start_t, end_t):
+        print(f"  note: {note}")
     return 0
+
+
+def _excluded_footage(project: Project, start_t: float, end_t: float) -> list[str]:
+    """Report footage outside the editable window.
+
+    The window is the overlap of every source, so a clip that ran longer than
+    the others is trimmed away -- correctly, since there is nothing to composite
+    it against. But dropping it silently means a camera that stopped two minutes
+    early costs two minutes of video with nothing on screen to say so.
+    """
+    notes = []
+    for clip in project.sources:
+        end = clip.master_end
+        lead = start_t - clip.master_start
+        tail = (end - end_t) if end is not None else 0.0
+        if lead > 0.05:
+            notes.append(f"{clip.id}: first {lead:.2f}s unused (another source starts later)")
+        if tail > 0.05:
+            notes.append(f"{clip.id}: last {tail:.2f}s unused (another source ends sooner)")
+    return notes
 
 
 def _render(args: argparse.Namespace) -> int:
@@ -131,6 +181,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-llm",
         action="store_true",
         help="keyword intent tagging only; no API calls",
+    )
+    a.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="overwrite an existing events file",
     )
     a.set_defaults(func=_analyze)
 

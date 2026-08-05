@@ -58,26 +58,143 @@ That buys three things:
 - when the edit is wrong you open a JSON file and fix one number, instead of
   re-recording.
 
-## Try it
+## How to run it
+
+### Install
 
 ```sh
-pip install -e '.[dev,perception,llm]'
-examples/demo/make_media.sh                      # synthetic screen + camera clips
-automata analyze examples/demo/project.json      # slow: transcribe + track gaze
-automata plan    examples/demo/project.json      # fast: decide the edit
-automata render  examples/demo/project.json -o examples/demo/out.mp4
+git clone <this repo> && cd automata
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev,perception,llm]'
 ```
+
+`ffmpeg` must be on `PATH` (`brew install ffmpeg`).
+
+Install in tiers if you only need part of it — the core has **zero runtime
+dependencies**, so the director runs without a single model weight:
+
+| Extra | Adds | Needed for |
+| --- | --- | --- |
+| `[dev]` | pytest, ruff | the director, timeline, bus |
+| `[perception]` | faster-whisper, mediapipe, av | `analyze` |
+| `[llm]` | anthropic | LLM intent classification (optional — `--no-llm` works) |
+
+On first gaze run a 3.6 MB face-landmarker model downloads to
+`~/.cache/automata/`.
+
+### The three commands
+
+```sh
+.venv/bin/automata analyze project.json           # footage  -> events.json
+.venv/bin/automata plan    project.json           # events   -> timeline.json
+.venv/bin/automata render  project.json -o out.mp4  # timeline -> video
+```
+
+| Command | Cost | Deterministic? | Run it |
+| --- | --- | --- | --- |
+| `analyze` | seconds–minutes | no | once per recording |
+| `plan` | milliseconds | yes | every time you change a setting |
+| `render` | minutes | yes | when you're happy with the timeline |
+
+They're separate because `analyze` is the only slow, non-deterministic,
+network-touching step. Tuning `min_shot_s` shouldn't mean re-running Whisper.
+
+Useful flags: `analyze --no-llm` (no API calls), `analyze --force` (overwrite an
+existing events file), `render --dry-run` (print the ffmpeg command, render
+nothing), `render -t timeline.json` (render a specific, possibly hand-edited
+timeline).
+
+### The 30-second version — no models needed
+
+`examples/demo/` ships a hand-written events file, so you can skip perception
+entirely and go straight to the decisions:
+
+```sh
+examples/demo/make_media.sh                        # synthetic screen + camera clips
+.venv/bin/automata plan   examples/demo/project.json
+.venv/bin/automata render examples/demo/project.json -o examples/demo/out.mp4
+```
+
+That fixture exercises the interesting paths without any footage: speech
+overriding gaze, a "cut that" that walks back over two bad takes but stops at a
+natural pause, the word "cut" used innocently in narration (`we cut the array in
+half`), a face leaving frame, and a camera that starts 0.4s late.
+
+### The full pipeline — with real speech
+
+`examples/live/` builds a recording with actual spoken audio (via macOS `say`),
+so transcription, gaze and intent all run for real:
+
+```sh
+examples/live/make_media.sh
+.venv/bin/automata analyze examples/live/project.json    # slow: transcribe + track gaze
+.venv/bin/automata plan    examples/live/project.json    # fast: decide the edit
+.venv/bin/automata render  examples/live/project.json -o examples/live/out.mp4
+```
+
+19.3s of footage → 14.2s output, in about 3s wall.
 
 Add `--no-llm` to `analyze` for keyword intent tagging only — no API calls. With
 neither the SDK nor credentials configured it degrades to that automatically and
 says so.
 
-The bundled fixture exercises the interesting paths without any footage: speech
-overriding gaze, a "cut that" that walks back over two bad takes but stops at a
-natural pause, the word "cut" used innocently in narration (`we cut the array in
-half`), a face leaving frame, and a camera that starts 0.4s late.
-`examples/live/` goes further and builds a recording with **real speech** (via
-macOS `say`), so the full perception path runs without a webcam.
+> `analyze` refuses to overwrite an existing events file without `--force`.
+> That file is meant to be hand-edited — fixing a mistranscribed line there is
+> the intended workflow, and re-analysing would silently discard it.
+
+### On your own recording
+
+Record camera, screen and audio separately (OBS multi-track, QuickTime,
+whatever you use), then write a `project.json` beside the files:
+
+```json
+{
+  "sources": [
+    {"id": "screen", "role": "screen", "path": "screen.mp4",
+     "duration_s": 1800.0, "has_audio": true},
+    {"id": "cam0",   "role": "camera", "path": "camera.mp4",
+     "duration_s": 1800.0, "offset_s": 0.42}
+  ],
+  "audio_from": "screen",
+  "director": {"min_shot_s": 2.5},
+  "render": {"width": 1920, "height": 1080, "fps": 30}
+}
+```
+
+Then the same three commands. Two fields do the real work:
+
+**`duration_s`** is required — together the durations define the *editable
+window*, the span where every source has footage. Get it from ffprobe:
+
+```sh
+ffprobe -v error -show_entries format=duration -of csv=p=0 screen.mp4
+```
+
+**`offset_s`** maps a clip's own time onto the master timeline
+(`master = local + offset_s`). It is the only place wall-clock time is allowed
+in, and getting it wrong lands every gaze event on the wrong words. Either clap
+once on camera at the start and align the transients, or — if both files came
+from one OBS recording — leave both at `0.0`.
+
+Everything else is optional. `director` accepts any field from `DirectorConfig`
+and `render` any field from `RenderConfig`; a typo tells you so rather than
+silently defaulting.
+
+### Running the tests
+
+```sh
+.venv/bin/python -m pytest -q          # 52 tests, no network, no footage
+.venv/bin/python -m pytest -k cut -v   # just the cut behaviour
+.venv/bin/ruff check .
+```
+
+`tests/test_director.py` is the real specification — the test names state the
+product decisions and the docstrings say why.
+
+**Open [pipeline.html](pipeline.html)** in a browser for an illustrated teardown of
+the whole path — what each stage produces, what the numbers mean, and the two
+damping constants caught in real gaze data. Every figure in it comes from one
+nine-minute run.
 
 **See [EXPERIMENTING.md](EXPERIMENTING.md)** for how to actually poke at this:
 writing fixtures, sweeping the director's constants, calibrating gaze on your own
