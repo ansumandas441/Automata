@@ -19,7 +19,11 @@ perception = [
   "mediapipe>=1.0",
   "av>=12.0",
 ]
-llm = ["anthropic>=0.40"]
+# Two ways to read the transcript. Both optional; the offline keyword path is
+# always available and needs neither.
+llm = ["anthropic>=0.40"]          # per-sentence classification
+gemini = ["google-genai>=1.0"]     # narrative state segmentation on Vertex
+ai = ["anthropic>=0.40", "google-genai>=1.0"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]

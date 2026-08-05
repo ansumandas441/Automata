@@ -85,13 +85,15 @@ On first gaze run a 3.6 MB face-landmarker model downloads to
 ### The three commands
 
 ```sh
-.venv/bin/automata analyze project.json           # footage  -> events.json
-.venv/bin/automata plan    project.json           # events   -> timeline.json
+.venv/bin/automata init  screen.mp4 camera.mp4    # two files -> project.json
+.venv/bin/automata analyze project.json           # footage   -> events.json
+.venv/bin/automata plan    project.json           # events    -> timeline.json
 .venv/bin/automata render  project.json -o out.mp4  # timeline -> video
 ```
 
 | Command | Cost | Deterministic? | Run it |
 | --- | --- | --- | --- |
+| `init` | seconds | yes | once per recording |
 | `analyze` | seconds–minutes | no | once per recording |
 | `plan` | milliseconds | yes | every time you change a setting |
 | `render` | minutes | yes | when you're happy with the timeline |
@@ -135,17 +137,209 @@ examples/live/make_media.sh
 19.3s of footage → 14.2s output, in about 3s wall.
 
 Add `--no-llm` to `analyze` for keyword intent tagging only — no API calls. With
-neither the SDK nor credentials configured it degrades to that automatically and
-says so.
+nothing configured it degrades to that automatically and says so. To read the
+transcript with AI instead, see **Online mode** below.
 
 > `analyze` refuses to overwrite an existing events file without `--force`.
 > That file is meant to be hand-edited — fixing a mistranscribed line there is
 > the intended workflow, and re-analysing would silently discard it.
 
-### On your own recording
+### Recording a real video
 
-Record camera, screen and audio separately (OBS multi-track, QuickTime,
-whatever you use), then write a `project.json` beside the files:
+**One command does the whole thing** — it starts your screen and camera
+together, waits for you to press ENTER, then analyses and renders:
+
+```sh
+.venv/bin/automata record ~/Desktop/take1
+```
+
+Check your setup first; four seconds now beats discovering it after a long take:
+
+```sh
+.venv/bin/automata record --check      # is your face findable? is the mic live?
+.venv/bin/automata record --list       # which devices it will use
+```
+
+Useful flags: `--talking-head` (camera on the screen: speech decides, gaze
+ignored), `--no-process` (just record), `--intent gemini`, `--camera N` /
+`--screen N` / `--audio N` to override device choice.
+
+**The offset is measured, not assumed.** Two recorders never start at the same
+instant — on a MacBook the gap runs 0.3–0.9s, the same order as the gaze
+debounce, and left unmeasured it shifts every gaze sample against the words. So
+both are *stopped* at the same instant instead; whichever started earlier ends
+up longer, and the difference is exactly the offset:
+
+```
+screen    11.50s
+camera    10.98s
+offset   +0.523s  (measured, not guessed)
+```
+
+### Recording it yourself
+
+If you'd rather use OBS or QuickTime, record two files and let `init` measure
+them.
+
+**You need two separate video files, not one composited recording.** Three ways
+to get them, easiest first:
+
+| How | Notes |
+| --- | --- |
+| OBS + the **Source Record** plugin | One click, one start time. Add a filter to each source and give it its own output file. |
+| OBS for the screen, QuickTime for the webcam | No plugin. Start them within a second of each other. |
+| Two OBS instances | Works, but heavier on the machine. |
+
+Whichever you pick, what matters is only this:
+
+- **screen** — continuous capture of what you're demonstrating
+- **camera** — a continuous head-and-shoulders shot, running the whole time,
+  never cutting away to anything else
+- **microphone** — on either file (`init` finds it)
+- **both started together**, so `offset_s` stays `0.0`
+
+Then talk normally. Say *"let me show you this"* when you move to the screen,
+*"back to me"* when you turn to the viewer, and *"cut that"* after a fluffed
+line. Those are signals, not commands — you don't have to change how you speak.
+
+**Afterwards, three commands:**
+
+```sh
+.venv/bin/automata init screen.mp4 camera.mp4 -o project.json
+.venv/bin/automata analyze project.json
+.venv/bin/automata plan    project.json
+.venv/bin/automata render  project.json -o out.mp4
+```
+
+`init` measures both files and writes the project for you — durations, frame
+rate, resolution, and crucially **which track actually carries your voice**:
+
+```
+project.json
+  screen  558.04s · 1920x1080 · 25 fps · audio -91.0 dB = silent
+  camera  552.64s · 1920x1080 · 23.976 fps · audio -23.2 dB
+  note: audio_from=cam0 (-23.2 dB); the other track exists but is silent
+```
+
+That silent-screen case is real and easy to hit — a screen recorder with no
+microphone still writes an audio track, and pointing transcription at it yields
+an empty transcript and a silent render with nothing to explain why.
+
+Add `--talking-head` if your camera sits on top of the screen, so you're facing
+it the whole time: gaze then carries no information and speech decides
+everything.
+
+**Roughly how long it takes**, measured on a 9-minute 1080p recording:
+
+| Footage | `analyze` | `plan` | `render` |
+| --- | --- | --- | --- |
+| 10 min | ~4 min | instant | ~40 s |
+| 20 min | ~9 min | instant | ~1 min |
+| 40 min | ~17 min | instant | ~2.5 min |
+
+`analyze` runs **once**; after that you can re-plan and re-render as often as
+you like for free.
+
+### Online mode — reading the transcript with AI
+
+Everything above runs **offline**: local Whisper, local face tracking, and
+regex patterns for intent. Nothing leaves your machine and nothing costs money.
+Online mode changes exactly one stage — how the transcript is read. Audio, video
+and gaze never leave your machine in any mode; only the text of what you said is
+sent.
+
+| `--intent` | The question it answers | Needs |
+| --- | --- | --- |
+| `offline` *(default)* | does this sentence match a known phrase? | nothing |
+| `claude` | what does this one sentence mean? | `ANTHROPIC_API_KEY` |
+| `gemini` | where does the creator's state change? | a Vertex service account |
+
+`gemini` is the one worth setting up. The other two label each sentence on its
+own; this one reads the transcript as a narrative and returns only the
+**transitions** — which state you open in, and every line where you move between
+showing something and talking to the viewer.
+
+#### Setting it up
+
+```sh
+export GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/automata/gcp-sa.json
+export GOOGLE_CLOUD_PROJECT=automata-gemini
+export GOOGLE_CLOUD_LOCATION=global
+export GOOGLE_GENAI_USE_VERTEXAI=true
+```
+
+Put those four lines in `~/.zshrc` to make it permanent. Install the client once:
+
+```sh
+.venv/bin/pip install -e '.[dev,perception,ai]'
+```
+
+#### Running it
+
+```sh
+.venv/bin/automata record ~/Desktop/take1 --intent gemini     # recording
+.venv/bin/automata analyze project.json    --intent gemini    # existing footage
+```
+
+Or set `AUTOMATA_INTENT=gemini` once and drop the flag — `analyze` and `record`
+both read it. With no flag and no environment variable, `auto` picks whichever
+backend is configured and falls back to `offline`, so a shell without the
+exports simply runs offline rather than failing.
+
+Confirm which mode ran — it is printed in the report and never inferred:
+
+```
+201 utterances, 4417 gaze samples, 7 intents  [gemini]
+  segmenter: 2 windows (0 cached), 7 transitions, 0 failed
+```
+
+#### What it buys you
+
+On the bundled nine-minute review, 7 events instead of 201:
+
+```
+  0.14  focus_camera   "My friends, I have been searching for"
+ 82.44  focus_screen   "So let's head over to the laptop"
+444.24  focus_camera   "how cool is that?"
+450.40  focus_screen   "I'll show you really quickly"
+533.99  focus_camera   "Hopefully this tool helps you"
+```
+
+The line at 82.44 is the whole argument. It names no UI element and matches no
+keyword — it is the moment the demo begins, and only context makes that legible.
+
+Pair it with `"intent_hold_s": null` so each transition holds the shot until the
+next one supersedes it. That is the natural fit for sparse events, and it is
+what `--talking-head` already sets:
+
+```sh
+.venv/bin/automata record ~/Desktop/take1 --intent gemini --talking-head
+```
+
+#### Cost, caching and failure
+
+Requests are bounded and cheap: the transcript is sent in 150-line windows, so a
+nine-minute video is two calls. Every window is cached to disk by model, prompt
+version and text, which means a re-run is free **and reproducible** — without
+that cache, re-analysing the same footage could produce a different edit.
+
+Cuts stay deterministic even here. The anchored regex still runs alongside and
+any cut it finds that the model missed is merged in, because cuts destroy
+footage and that decision keeps a precise detector in the loop.
+
+Every failure path falls back rather than stopping: an API error, malformed
+JSON, an invented line number, or missing credentials all yield no intents plus
+a note in the report. If you see this, the exports are not set in the shell you
+ran from:
+
+```
+gemini requested but not configured (set GOOGLE_CLOUD_PROJECT and
+GOOGLE_APPLICATION_CREDENTIALS); keywords only
+```
+
+### Writing a project by hand
+
+`init` covers the normal case. To write one yourself: 
 
 ```json
 {
@@ -216,6 +410,19 @@ shot shorter than `min_shot_s` (2.5s), and gaze must hold for `gaze_debounce_s`
 (0.8s) before it may move the camera. Without them, a creator glancing between
 screen and lens produces a strobing, unwatchable edit.
 
+**What releases a shot depends on your rig**, and `gaze_mode` says which:
+
+| Mode | Turning to the lens | Turning away | Fits |
+| --- | --- | --- | --- |
+| `follow` | claims camera | claims screen | Camera off to one side of the screen |
+| `latch` | claims camera, keeps it | nothing | A camera you face deliberately; speech releases it |
+| `off` | — | — | Camera on the screen — you always face it, so gaze says nothing |
+
+Pair `latch` with `intent_hold_s: null` so an instruction holds until another
+supersedes it. Pair `off` with `return_to_default_after_s` so that going back to
+ordinary narration is itself a signal — nothing renews the claim, and the shot
+comes home.
+
 Keeping the model out of the director makes the system roughly fifty times
 cheaper, reproducible, and debuggable — when a cut is wrong you can name the rule
 that made it.
@@ -227,6 +434,28 @@ keyed by `(model, prompt version, text)` — which exists less for cost than for
 reproducibility. Without it, re-running analysis on the same footage could
 produce a *different edit*. Taggers *abstain* rather than guess, so one that is
 unsure — or that times out — can never stall or hijack the edit.
+
+**Three ways to read the transcript**, chosen with `--intent`. Gaze is identical
+in all of them; only the reading changes.
+
+| Mode | What it asks | Needs |
+| --- | --- | --- |
+| `offline` | anchored regex, per sentence | nothing |
+| `claude` | *what does this one sentence mean?* | `ANTHROPIC_API_KEY` |
+| `gemini` | *where does the creator's state change?* | Vertex service account |
+
+The first two label each sentence independently. `gemini` is a different shape:
+it sends the numbered transcript and asks only for the **transitions** — which
+state the recording opens in, and every line where the creator moves between
+showing and speaking. On a nine-minute review that is seven events instead of
+201, and it catches the thing regex structurally cannot:
+
+```
+ 82.44  focus_screen   "So let's head over to the laptop"
+```
+
+That sentence names no UI element and contains no keyword. It is the moment the
+demo begins, and it is only legible in context.
 
 **Analysis is separated from planning.** Transcription and face tracking are
 slow, non-deterministic and network-touching; deciding the edit is milliseconds

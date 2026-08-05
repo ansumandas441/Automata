@@ -139,8 +139,9 @@ class VerdictCache:
     invalidate anything.
     """
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, *, namespace: str | None = None) -> None:
         self.path = Path(path) if path else None
+        self._namespace = namespace or f"{MODEL}\x00{PROMPT_VERSION}"
         self._entries: dict[str, dict] = {}
         self._dirty = False
         if self.path and self.path.exists():
@@ -149,9 +150,13 @@ class VerdictCache:
             except (OSError, ValueError):
                 self._entries = {}  # a corrupt cache is a slow run, not a failure
 
-    @staticmethod
-    def key(text: str) -> str:
-        payload = f"{MODEL}\x00{PROMPT_VERSION}\x00{' '.join(text.lower().split())}"
+    def key(self, text: str) -> str:
+        """Namespaced so two producers can share one cache file safely.
+
+        The namespace carries the model and prompt version, so changing either
+        misses rather than silently reusing an answer to a different question.
+        """
+        payload = f"{self._namespace}\x00{' '.join(text.lower().split())}"
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def get(self, text: str) -> dict | None:

@@ -11,11 +11,110 @@ import argparse
 import sys
 from pathlib import Path
 
+from .events import Intent
+from .init_project import ProbeError, init_project
 from .perception.fixture import load_events, save_events
 from .pipeline import editable_window, plan
 from .project import Project
+from .record import RecordError
 from .render import ffmpeg
 from .timeline import Timeline
+
+
+def _record(args: argparse.Namespace) -> int:
+    from . import recorder_ui as ui
+
+    try:
+        devices = ui.list_devices()
+        if args.list:
+            ui.print_devices(devices)
+            return 0
+
+        if args.check:
+            _, camera, microphone = ui.choose(
+                devices, args.screen, args.camera, args.audio
+            )
+            ok = ui.check_framing(camera, microphone, Path(args.directory))
+            return 0 if ok else 1
+
+        directory = Path(args.directory)
+        if (directory / "screen.mp4").exists() and not args.force:
+            print(
+                f"{directory}/screen.mp4 already exists; pass --force to overwrite "
+                "or choose another directory.",
+                file=sys.stderr,
+            )
+            return 2
+
+        screen, camera, microphone = ui.choose(
+            devices, args.screen, args.camera, args.audio
+        )
+        recording = ui.run_session(directory, screen, camera, microphone)
+    except RecordError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
+    offset = recording.camera_offset_s
+    print(f"  screen   {recording.screen_duration:7.2f}s")
+    print(f"  camera   {recording.camera_duration:7.2f}s")
+    print(f"  offset   {offset:+7.3f}s  (measured, not guessed)")
+    print()
+
+    project = directory / "project.json"
+    result = init_project(
+        recording.screen_path, recording.camera_path, project,
+        talking_head=args.talking_head, camera_offset_s=offset,
+    )
+    print(result.path)
+    for note in result.notes:
+        print(f"  note: {note}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+
+    if args.no_process:
+        print(f"\nNext:  automata analyze {project}")
+        return 0
+
+    print("\n== analysing ==")
+    args.project, args.output, args.force, args.intent, args.no_llm = (
+        str(project), None, True, args.intent, False,
+    )
+    if (code := _analyze(args)) != 0:
+        return code
+
+    print("\n== deciding the edit ==")
+    args.retag = False
+    if (code := _plan(args)) != 0:
+        return code
+
+    print("\n== rendering ==")
+    args.timeline, args.dry_run, args.ffmpeg = None, False, "ffmpeg"
+    args.output = str(directory / "out.mp4")
+    return _render(args)
+
+
+def _init(args: argparse.Namespace) -> int:
+    output = Path(args.output or "project.json")
+    if output.exists() and not args.force:
+        print(f"{output} already exists; pass --force to overwrite.", file=sys.stderr)
+        return 2
+    try:
+        result = init_project(
+            args.screen, args.camera, output, talking_head=args.talking_head
+        )
+    except ProbeError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
+    print(result.path)
+    print(f"  screen  {result.screen.describe()}")
+    print(f"  camera  {result.camera.describe()}")
+    for note in result.notes:
+        print(f"  note: {note}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    print(f"\nNext:  automata analyze {output}")
+    return 0
 
 
 def _analyze(args: argparse.Namespace) -> int:
@@ -35,17 +134,35 @@ def _analyze(args: argparse.Namespace) -> int:
 
     from .analyze import analyze  # imported late: pulls in the optional deps
 
-    events, report = analyze(
-        project,
-        use_llm=not args.no_llm,
-        cache_path=output.with_suffix(".verdicts.json"),
-    )
+    mode = "offline" if args.no_llm else args.intent
+    try:
+        events, report = analyze(
+            project, mode=mode, cache_path=output.with_suffix(".verdicts.json")
+        )
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     save_events(events, output)
 
     print(output)
     for line in report.lines():
         print(f"  {line}")
     return 0
+
+
+def _load_for_plan(path: Path, *, retag: bool):
+    """Load events, optionally discarding the stored intent labels.
+
+    Those labels are derived data, but they are baked into the events file at
+    analysis time. That is right for language-model verdicts, which are slow and
+    must stay reproducible -- and wrong for the local keyword patterns, which are
+    free and deterministic. Without this, editing a regex has no effect until you
+    re-transcribe the whole recording.
+    """
+    events = load_events(path)
+    if not retag:
+        return events
+    return [e for e in events if not isinstance(e, Intent)]
 
 
 def _window_error(project: Project) -> str:
@@ -90,7 +207,7 @@ def _plan(args: argparse.Namespace) -> int:
         return 2
 
     timeline = plan(
-        load_events(events),
+        _load_for_plan(events, retag=args.retag),
         config=project.director,
         start_t=start_t,
         end_t=end_t,
@@ -174,13 +291,50 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="automata", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    r = sub.add_parser("record", help="capture screen and camera together, then edit")
+    r.add_argument("directory", nargs="?", default=".", help="where to write everything")
+    r.add_argument("--list", action="store_true", help="show capture devices and exit")
+    r.add_argument("--check", action="store_true",
+                   help="record 4s and report whether your framing works for gaze")
+    r.add_argument("--screen", type=int, help="screen device index")
+    r.add_argument("--camera", type=int, help="camera device index")
+    r.add_argument("--audio", type=int, help="microphone device index")
+    r.add_argument("--talking-head", action="store_true",
+                   help="camera sits on the screen: speech decides, gaze is ignored")
+    r.add_argument("--intent", choices=("auto", "offline", "claude", "gemini"), default=None)
+    r.add_argument("--no-process", action="store_true",
+                   help="just record; do not analyse or render")
+    r.add_argument("-f", "--force", action="store_true", help="overwrite an existing recording")
+    r.set_defaults(func=_record)
+
+    i = sub.add_parser("init", help="measure two recordings and write a project file")
+    i.add_argument("screen", help="the screen capture")
+    i.add_argument("camera", help="the webcam recording")
+    i.add_argument("-o", "--output", help="where to write it (default project.json)")
+    i.add_argument(
+        "--talking-head",
+        action="store_true",
+        help="camera sits on the screen, so you always face it: speech decides "
+             "everything and gaze is ignored",
+    )
+    i.add_argument("-f", "--force", action="store_true", help="overwrite an existing project")
+    i.set_defaults(func=_init)
+
     a = sub.add_parser("analyze", help="transcribe, track gaze, and write an events file")
     a.add_argument("project")
     a.add_argument("-o", "--output")
     a.add_argument(
+        "--intent",
+        choices=("auto", "offline", "claude", "gemini"),
+        default=None,
+        help="how to read the transcript: offline keyword patterns, per-sentence "
+             "claude, or gemini narrative segmentation. Defaults to $AUTOMATA_INTENT, "
+             "else whichever is configured",
+    )
+    a.add_argument(
         "--no-llm",
         action="store_true",
-        help="keyword intent tagging only; no API calls",
+        help="shorthand for --intent offline; no API calls",
     )
     a.add_argument(
         "-f",
@@ -193,6 +347,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("plan", help="decide the edit and write a timeline")
     p.add_argument("project")
     p.add_argument("-o", "--output")
+    p.add_argument(
+        "--retag",
+        action="store_true",
+        help="re-run the local keyword patterns instead of using the stored "
+             "labels (discards any language-model labels in the events file)",
+    )
     p.set_defaults(func=_plan)
 
     r = sub.add_parser("render", help="render a timeline with ffmpeg")

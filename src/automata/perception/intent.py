@@ -40,15 +40,24 @@ _CUT = _phrases(
     rf"^{_FILLER}(?:cut,?\s*){{2,}}",
 )
 
+# Widened against a real 201-sentence screencast transcript. People do not
+# narrate the way test fixtures do: the idealised "let me show you this
+# function" is rare, while "here you can see", "so you just click on it" and
+# "I'm going to show you" carry the same meaning and are what actually gets
+# said. Deixis plus a UI verb is the reliable shape.
 _FOCUS_SCREEN = _phrases(
-    r"\blet me show you\b",
-    r"\b(?:look|looking) at (?:this|the (?:code|screen|terminal|file|editor))\b",
-    r"\bcheck (?:this|it) out\b",
-    r"\b(?:here'?s|this is) the (?:code|file|function|error|output)\b",
-    r"\bas you can see (?:here|on|in)\b",
-    r"\bover here\b",
+    r"\b(?:let me|lemme|i'?ll|i'?m going to|i'?m gonna|going to|gonna)\s+show you\b",
+    r"\b(?:look|looking) at (?:this|that|the (?:code|screen|terminal|file|editor))\b",
+    r"\bcheck (?:this|it|that) out\b",
+    r"\b(?:here'?s|this is) the (?:code|file|function|error|output|part|bit)\b",
+    r"\byou(?:'ll| will| can)? see\b",
+    r"\b(?:click|clicking|tap|tapping|press|pressing) on\b",
+    r"\bscroll (?:down|up|over|back|to)\b",
+    r"\b(?:over|down|up|right|in|back) (?:here|there)\b",
     r"\bon (?:my|the) screen\b",
-    r"\bif (?:we|you) (?:run|open|look at) (?:this|it)\b",
+    r"\bif (?:we|you) (?:run|open|hit|look at|go to) (?:this|it|that)\b",
+    r"\bthis (?:tab|button|panel|menu|window|option|setting|section|dropdown|field)\b",
+    r"\bnotice (?:how|that|the)\b",
 )
 
 _FOCUS_CAMERA = _phrases(

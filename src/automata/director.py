@@ -9,10 +9,17 @@ it, instead of re-rolling a prompt.
 
 Arbitration, highest priority first::
 
-    forced (a source is missing)  >  explicit speech  >  gaze  >  hold
+    forced (a source is missing)  >  explicit speech  >  gaze  >  drift  >  hold
 
 with two dampers on top: no shot may be shorter than ``min_shot_s``, and gaze
 must hold steady for ``gaze_debounce_s`` before it counts.
+
+What *releases* a shot matters as much as what claims it, and that depends on
+the rig -- see :class:`~automata.config.GazeMode`. With the camera off to one
+side, looking away is itself a signal (``FOLLOW``). With a camera the creator
+only faces deliberately, turning away means nothing and speech has to release
+the shot (``LATCH``). With the camera sitting on the screen, gaze carries no
+information at all (``OFF``) and only speech decides.
 
 Events must arrive in strict time order -- that is what :class:`.EventBus`
 guarantees. The director asserts it rather than trusting it.
@@ -20,11 +27,12 @@ guarantees. The director asserts it rather than trusting it.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from enum import IntEnum
 
-from .config import DirectorConfig
+from .config import DirectorConfig, GazeMode
 from .events import (
     Event,
     GazeSample,
@@ -53,6 +61,8 @@ class _Desire:
     layout: Layout
     reason: str
     priority: Priority
+    consumes_edge: bool = False
+    """True for a one-shot desire raised by a gaze edge, cleared once acted on."""
 
 
 _INTENT_LAYOUTS = {
@@ -82,8 +92,13 @@ class Director:
 
         self._gaze = GazeState.UNKNOWN
         self._gaze_since = start_t
+        self._gaze_rising = False
+        """A turn *to* the lens that has not yet been acted on (LATCH mode)."""
+
         self._intent: Intent | None = None
         self._intent_expiry = -float("inf")
+        self._idle_since: float | None = None
+        """When every rule last stopped asserting, for return-to-default."""
 
         self._utterances: deque[Utterance] = deque()
         self._missing: set[SourceRole] = set()
@@ -178,14 +193,24 @@ class Director:
 
         if intent.kind in _INTENT_LAYOUTS:
             self._intent = intent
-            self._intent_expiry = intent.t_end + self.config.intent_hold_s
+            hold = self.config.intent_hold_s
+            self._intent_expiry = math.inf if hold is None else intent.t_end + hold
+            # Speech supersedes a latched glance. Without this, a latch that was
+            # overridden would spring back the moment the instruction expired,
+            # and "let me show you this" would bounce to camera mid-sentence.
+            self._gaze_rising = False
 
     def _on_gaze(self, sample: GazeSample) -> None:
         if sample.state not in GazeState.ALL:
             raise ValueError(f"unknown gaze state {sample.state!r}")
         if sample.state != self._gaze:
+            turned_to_lens = (
+                sample.state == GazeState.LOOKING and self._gaze != GazeState.LOOKING
+            )
             self._gaze = sample.state
             self._gaze_since = sample.t
+            if turned_to_lens:
+                self._gaze_rising = True
 
     def _on_source(self, status: SourceStatus) -> None:
         if status.available:
@@ -211,17 +236,9 @@ class Director:
             evidence = self._intent.evidence or self._intent.kind
             return _Desire(layout, f"said: {evidence}", Priority.EXPLICIT)
 
-        if (
-            self.config.gaze_enabled
-            and self._gaze in (GazeState.LOOKING, GazeState.AWAY)
-            and now - self._gaze_since >= self.config.gaze_debounce_s
-        ):
-            looking = self._gaze == GazeState.LOOKING
-            return _Desire(
-                Layout.CAMERA_FOCUS if looking else Layout.SCREEN_FOCUS,
-                "gaze on lens" if looking else "gaze off lens",
-                Priority.GAZE,
-            )
+        gaze = self._gaze_desire(now)
+        if gaze is not None:
+            return gaze
 
         if self._layout in _DEGRADED:
             # A source came back but nothing is asking for a shot; don't strand
@@ -231,8 +248,60 @@ class Director:
         # Gaze UNKNOWN (no face in frame) is not a reason to move the camera.
         return None
 
+    def _gaze_desire(self, now: float) -> _Desire | None:
+        """What gaze is asking for, if anything.
+
+        The two modes differ in which transitions count. FOLLOW reads the signal
+        continuously in both directions. LATCH reads only the rising edge -- a
+        turn *to* the lens claims the camera, and turning away says nothing at
+        all, leaving the shot to be released by speech instead.
+        """
+        mode = self.config.effective_gaze_mode
+        if mode is GazeMode.OFF:
+            return None
+
+        settled = now - self._gaze_since >= self.config.gaze_debounce_s
+
+        if mode is GazeMode.LATCH:
+            if self._gaze_rising and self._gaze == GazeState.LOOKING and settled:
+                return _Desire(
+                    Layout.CAMERA_FOCUS, "turned to lens", Priority.GAZE, consumes_edge=True
+                )
+            return None
+
+        if self._gaze in (GazeState.LOOKING, GazeState.AWAY) and settled:
+            looking = self._gaze == GazeState.LOOKING
+            return _Desire(
+                Layout.CAMERA_FOCUS if looking else Layout.SCREEN_FOCUS,
+                "gaze on lens" if looking else "gaze off lens",
+                Priority.GAZE,
+            )
+        return None
+
+    def _drift_home(self, now: float) -> _Desire | None:
+        """Return to the default layout once every claim has lapsed.
+
+        This is what makes ordinary narration a signal in its own right: an
+        explicit "look at this" wins the screen, and when the creator goes back
+        to talking rather than showing, nothing renews that claim and the shot
+        comes home on its own.
+        """
+        grace = self.config.return_to_default_after_s
+        if grace is None or self._layout is self.config.default_layout:
+            return None
+        if self._idle_since is None or now - self._idle_since < grace:
+            return None
+        return _Desire(self.config.default_layout, "attention lapsed", Priority.RECOVERY)
+
     def _reconcile(self, now: float) -> None:
         desire = self._desire(now)
+        if desire is None:
+            if self._idle_since is None:
+                self._idle_since = now
+            desire = self._drift_home(now)
+        else:
+            self._idle_since = None
+
         if desire is None or desire.layout is self._layout:
             return
         if (
@@ -240,6 +309,8 @@ class Director:
             and now - self._last_switch_t < self.config.min_shot_s
         ):
             return
+        if desire.consumes_edge:
+            self._gaze_rising = False
         self._switch(now, desire.layout, desire.reason)
 
     def _switch(self, now: float, layout: Layout, reason: str) -> None:
